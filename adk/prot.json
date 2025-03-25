@@ -1,0 +1,16 @@
+[{
+    "sequences": [
+        {
+            "proteinChain": {
+                "sequence": "MRIILLGAPGAGKGTQAQFIMEKYGIPQISTGDMLRAAVKSGSELGKQAKDIMDAGKLVTDELVIALVKERIAQEDCRNGFLLDGFPRTIPQADAMKEAGINVDYVLEFDVPDELIVDRIVGRRVHAPSGRVYHVKFNPPKVEGKDDVTGEELTTRKDDQEETVRKRLVEYHQMTAPLIGYYSKEAEAGNTKYAKVDGTKPVAEVRADLEKILG",
+                "count": 1,
+                "msa": {
+                    "precomputed_msa_dir": "./msa/0",
+                    "pairing_db": "uniref100"
+                }
+            }
+        }
+    ],
+    "name": "4ake"
+}
+]
