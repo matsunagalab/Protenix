@@ -119,6 +119,134 @@ class InferenceNoiseScheduler:
 
         return t_step_list
 
+def get_ca_coord_for_residue(x_l, input_feature_dict, residue_i):
+    """
+    残基iのCα原子の座標を取り出す関数
+    
+    Args:
+        x_l: 原子座標テンソル [..., N_sample, N_atom, 3]
+        input_feature_dict: 入力特徴量辞書
+        residue_i: 残基番号（0-indexベース）
+    
+    Returns:
+        ca_coords: 指定された残基のCα原子の座標 [..., N_sample, 3]
+    """
+    # 残基iに属する原子のマスクを作成
+    atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
+    residue_mask = (atom_to_token_idx == residue_i)
+    
+    # 原子名からCαを特定
+    atom_names = input_feature_dict["ref_atom_name_chars"]  # [N_atom, 4, 64]
+    # 'C'と'A'のエンコードされた位置: ord(c) - 32
+    c_pos = ord('C') - 32  # 35
+    a_pos = ord('A') - 32  # 33
+    
+    # 最初の文字が'C'で2番目が'A'の原子を探す
+    is_c = (atom_names[:, 0, c_pos] == 1)
+    is_a = (atom_names[:, 1, a_pos] == 1)
+    ca_mask = is_c & is_a
+    
+    # 残基iのCα原子のインデックスを取得
+    matching_atoms = torch.where(residue_mask & ca_mask)[0]
+    if len(matching_atoms) == 0:
+        raise ValueError(f"No CA atom found for residue {residue_i}")
+    atom_idx = matching_atoms[0]
+    
+    # 座標を取り出す
+    ca_coords = x_l[..., atom_idx, :]
+    
+    return ca_coords
+
+def calc_ca_distance_loss(res_i, res_j, x_coords, input_feature_dict):
+    """
+    残基iと残基jのCα原子間距離が1.0からどれだけ離れているかの二乗損失を計算
+    
+    Args:
+        res_i: 最初の残基のインデックス
+        res_j: 2番目の残基のインデックス
+        x_coords: 座標テンソル [..., N_sample, N_atom, 3] (requires_grad=True が必要)
+        input_feature_dict: 入力特徴量辞書
+    
+    Returns:
+        loss: 損失値（スカラー）
+    """
+    # 残基のCα原子の座標を取得
+    ca_i = get_ca_coord_for_residue(x_coords, input_feature_dict, res_i)  # [..., N_sample, 3]
+    ca_j = get_ca_coord_for_residue(x_coords, input_feature_dict, res_j)  # [..., N_sample, 3]
+    
+    # Cα原子間の距離を計算
+    ca_dist = torch.sqrt(torch.sum((ca_j - ca_i) ** 2, dim=-1))  # [..., N_sample]
+    print("ca_dist:", ca_dist.item())
+    
+    # 距離1.0からの差分の二乗を計算
+    loss = torch.mean((ca_dist - 15.0) ** 2)  # スカラー
+    
+    return loss
+
+def calc_com_distance_loss(res_i, res_j, x_coords, input_feature_dict):
+    """
+    残基グループi と残基グループj の重心間距離が0.5からどれだけ離れているかの二乗損失を計算
+    
+    Args:
+        res_i: 最初の残基グループのインデックスのリスト
+        res_j: 2番目の残基グループのインデックスのリスト
+        x_coords: 座標テンソル [..., N_sample, N_atom, 3] (requires_grad=True が必要)
+        input_feature_dict: 入力特徴量辞書
+    
+    Returns:
+        loss: 損失値（スカラー）
+    """
+    # 残基グループiの重心を計算
+    centroid_i = torch.zeros_like(x_coords[..., 0, :])  # [..., N_sample, 3]
+    count = 0
+    for idx in res_i:
+        # 残基idxに属する原子のマスクを作成
+        atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
+        residue_mask = (atom_to_token_idx == idx)
+        
+        # マスクに該当する原子の座標を取得
+        matching_atoms = torch.where(residue_mask)[0]
+        if len(matching_atoms) == 0:
+            raise ValueError(f"No atoms found for residue {idx}")
+        
+        # 残基内の全原子の座標を合計
+        for atom_idx in matching_atoms:
+            centroid_i += x_coords[..., atom_idx, :]
+        
+        # 残基内の原子数でカウント
+        count += len(matching_atoms)
+
+    centroid_i = centroid_i / count
+
+    # 残基グループjの重心を計算
+    centroid_j = torch.zeros_like(x_coords[..., 0, :])  # [..., N_sample, 3]
+    count = 0
+    for idx in res_j:
+        # 残基idxに属する原子のマスクを作成
+        atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
+        residue_mask = (atom_to_token_idx == idx)
+        
+        # マスクに該当する原子の座標を取得
+        matching_atoms = torch.where(residue_mask)[0]
+        if len(matching_atoms) == 0:
+            raise ValueError(f"No atoms found for residue {idx}")
+        
+        # 残基内の全原子の座標を合計
+        for atom_idx in matching_atoms:
+            centroid_j += x_coords[..., atom_idx, :]
+        
+        # 残基内の原子数でカウント
+        count += len(matching_atoms)
+    
+    centroid_j = centroid_j / count
+
+    # 重心間の距離を計算
+    centroid_dist = torch.sqrt(torch.sum((centroid_j - centroid_i) ** 2, dim=-1))  # [..., N_sample]
+    
+    # 距離0.5からの差分の二乗を計算
+    loss = torch.mean((centroid_dist - 10.0) ** 2)  # スカラー
+    
+    return loss
 
 def sample_diffusion(
     denoise_net: Callable,
@@ -215,9 +343,31 @@ def sample_diffusion(
                 inplace_safe=inplace_safe,
             )
 
+            with torch.enable_grad():
+                x_coords = x_noisy.clone().detach().requires_grad_(True)
+    
+                # 距離制約の損失を計算
+                #loss = calc_ca_distance_loss(10, 129, x_coords, input_feature_dict)
+                loss = calc_com_distance_loss([127, 128, 129, 130, 131], [7, 8, 9, 10, 11], x_coords, input_feature_dict)
+
+                # 勾配を計算
+                loss.backward()
+    
+                # 勾配を取得
+                gradient = x_coords.grad
+    
+                print("Loss:", loss.item())
+                #print("Gradient shape:", gradient.shape)
+                #print("Gradient max:", gradient.abs().max().item())
+            
             delta = (x_noisy - x_denoised) / t_hat[
                 ..., None, None
             ]  # Line 9 of AF3 uses 'x_l_hat' instead, which we believe  is a typo.
+
+            g = gradient
+            g = g * (torch.norm(delta.reshape(-1)) / torch.norm(g.reshape(-1)))
+            delta = delta + 0.2 * g
+
             dt = c_tau - t_hat
             x_l = x_noisy + step_scale_eta * dt[..., None, None] * delta
 
