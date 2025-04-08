@@ -183,6 +183,7 @@ def inference_jsons(
     out_dir: str = "./output",
     use_msa_server: bool = False,
     seeds: tuple = (101,),
+    **config_kwargs
 ) -> None:
     """
     infer_json: json file or directory, will run infer with these jsons
@@ -210,6 +211,25 @@ def inference_jsons(
     inference_configs["dump_dir"] = out_dir
     inference_configs["input_json_path"] = infer_jsons[0]
     runner = get_default_runner(seeds)
+
+    # config_kwargsのうち、runner.configsのキーと一致するものがあれば更新
+    for k, v in config_kwargs.items():
+        if k in runner.configs:
+            runner.configs[k] = v
+        elif '.' in k:
+            # ネストされた辞書キー対応: e.g., sample_diffusion.noise_scale_lambda
+            keys = k.split('.')
+            d = runner.configs
+            for key in keys[:-1]:
+                if key not in d:
+                    logger.warning(f"Key {' -> '.join(keys[:-1])} is invalid.")
+                    break
+                else:
+                    d = d[key]
+            else:
+                d[keys[-1]] = v
+                logger.info(f"{keys[-1]}: v")
+    
     configs = runner.configs
     for idx, infer_json in enumerate(tqdm.tqdm(infer_jsons)):
         try:
@@ -268,14 +288,25 @@ def batch_inference(
 def protenix_cli():
     return
 
+def _auto_cast(val: str):
+    if val.lower() in ("true", "false"):
+        return val.lower() == "true"
+    try:
+        return int(val)
+    except ValueError:
+        try:
+            return float(val)
+        except ValueError:
+            return val
 
-@click.command()
+@click.command(context_settings={"ignore_unknown_options": True})
 @click.option("--input", type=str, help="json files or dir for inference")
 @click.option("--out_dir", default="./output", type=str, help="infer result dir")
 @click.option(
     "--seeds", type=str, default="101", help="the inference seed, split by comma"
 )
 @click.option("--use_msa_server", is_flag=True, help="do msa search or not")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def predict(input, out_dir, seeds, use_msa_server):
     """
     predict: Run predictions with protenix.
@@ -287,7 +318,27 @@ def predict(input, out_dir, seeds, use_msa_server):
         f"run infer with input={input}, out_dir={out_dir}, use_msa_server={use_msa_server}"
     )
     seeds = list(map(int, seeds.split(",")))
-    inference_jsons(input, out_dir, use_msa_server, seeds=seeds)
+
+    # extra_args をパース: ['--arg1', '0', '--arg2', 'some_str'] → {'arg1': 0, 'arg2': 'some_str'}
+    kwargs = {}
+    i = 0
+    while i < len(extra_args):
+        if extra_args[i].startswith("--"):
+            key = extra_args[i][2:]
+            if i + 1 < len(extra_args) and not extra_args[i + 1].startswith("--"):
+                val = extra_args[i + 1]
+                kwargs[key] = _auto_cast(val)
+                i += 2
+            else:
+                kwargs[key] = True  # フラグ（--flag）の場合
+                i += 1
+        else:
+            logger.warning(f"Invarid key: {extra_args[i]}")
+            i += 1  # 念のため無効な形式をスキップ
+
+    logger.info(f"Extra kwargs: {kwargs}")
+    
+    inference_jsons(input, out_dir, use_msa_server, seeds=seeds, **kwargs)
 
 
 @click.command()
