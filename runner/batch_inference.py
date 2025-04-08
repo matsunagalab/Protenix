@@ -307,7 +307,7 @@ def _auto_cast(val: str):
 )
 @click.option("--use_msa_server", is_flag=True, help="do msa search or not")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
-def predict(input, out_dir, seeds, use_msa_server):
+def predict(input, out_dir, seeds, use_msa_server, extra_args):
     """
     predict: Run predictions with protenix.
     :param input, out_dir, use_msa_server
